@@ -22,7 +22,7 @@ class NeptuneCallback(Callback):
             raise ValueError('You did not initialize project in neptune.\n',
                              'Please invoke `neptune.init("USERNAME/PROJECT_NAME")` before this callback.')
 
-    def begin_fit(self):
+    def before_fit(self):
         try:
             self.experiment = neptune.get_experiment()
         except ValueError:
@@ -48,7 +48,6 @@ class NeptuneCallback(Callback):
 
     def after_batch(self):
         # log loss and opt.hypers
-        self.experiment.set_property('n_iter', str(self.learn.n_iter))
         if self.learn.training:
             self.experiment.log_metric('batch__smooth_loss', self.learn.smooth_loss)
             self.experiment.log_metric('batch__loss', self.learn.loss)

@@ -8,6 +8,9 @@ from ..basics import *
 from .progress import *
 
 # Cell
+from torch.cuda.amp import GradScaler, autocast
+
+# Cell
 from ..fp16_utils import convert_network, model_grads_to_master_grads, master_params_to_model_params
 
 # Cell
@@ -64,7 +67,7 @@ def _copy_state(opt, pgs1, pgs2):
 class ModelToHalf(Callback):
     "Use with MixedPrecision callback (but it needs to run at the very beginning)"
     run_before=TrainEvalCallback
-    def begin_fit(self): self.learn.model = convert_network(self.model, dtype=torch.float16)
+    def before_fit(self): self.learn.model = convert_network(self.model, dtype=torch.float16)
     def after_fit(self): self.learn.model = convert_network(self.model, dtype=torch.float32)
 
 # Cell
@@ -81,7 +84,7 @@ class MixedPrecision(Callback):
         self.div_factor,self.scale_wait,self.clip = div_factor,scale_wait,clip
         self.loss_scale = max_loss_scale if dynamic else loss_scale
 
-    def begin_fit(self):
+    def before_fit(self):
         assert self.dls.device.type == 'cuda', "Mixed-precision training requires a GPU, remove the call `to_fp16`"
         if self.learn.opt is None: self.learn.create_opt()
         self.model_pgs,self.master_pgs = get_master(self.opt, self.flat_master)
@@ -90,7 +93,7 @@ class MixedPrecision(Callback):
         _copy_state(self.learn.opt, self.model_pgs, self.master_pgs)
         if self.dynamic: self.count = 0
 
-    def begin_batch(self): self.learn.xb = to_half(self.xb)
+    def before_batch(self): self.learn.xb = to_half(self.xb)
     def after_pred(self): self.learn.pred = to_float(self.pred)
     def after_loss(self):
         if self.training: self.learn.loss *= self.loss_scale
@@ -127,8 +130,8 @@ class MixedPrecision(Callback):
         delattr(self, "model_pgs")
         delattr(self, "old_pgs")
 
-    _docs = dict(begin_fit="Put the model in FP16 and prepare the two copies of the parameters",
-                 begin_batch="Put the input in FP16",
+    _docs = dict(before_fit="Put the model in FP16 and prepare the two copies of the parameters",
+                 before_batch="Put the input in FP16",
                  after_pred="Put the output back to FP32 so that the loss is computed in FP32",
                  after_loss="Apply loss scaling to avoid gradient underflow",
                  after_backward="Copy the gradients to the master param and undo the loss scaling",
@@ -151,10 +154,9 @@ def to_fp32(self: Learner):
 
 # Cell
 def mixed_precision_one_batch(self, i, b):
-    from torch.cuda.amp import autocast
     self.iter = i
     try:
-        self._split(b);                                      self('begin_batch')
+        self._split(b);                                      self('before_batch')
         with autocast():
             self.pred = self.model(*self.xb);                self('after_pred')
             if len(self.yb) == 0: return
@@ -168,23 +170,24 @@ def mixed_precision_one_batch(self, i, b):
 
 # Cell
 class NativeMixedPrecision(Callback):
-    def __init__(self):
-        try: from torch.cuda.amp import GradScaler, autocast
-        except: raise Exception("NativeMixedPrecision requires PyTorch nightlies")
-    def begin_fit(self):
-        from torch.cuda.amp import GradScaler
+
+    @delegates(GradScaler.__init__)
+    def __init__(self, **kwargs):
+        self.scaler_kwargs = kwargs
+    def before_fit(self):
         self.old_one_batch = self.learn.one_batch
         self.learn.one_batch = partial(mixed_precision_one_batch, self.learn)
-        self.learn.scaler = GradScaler()
+        self.learn.scaler = GradScaler(**self.scaler_kwargs)
 
     def after_step(self): self.learn.scaler.update()
     def after_fit(self):
         if getattr(self, 'old_one_batch', None) is not None: self.learn.one_batch = self.old_one_batch
 
 # Cell
+@delegates(GradScaler.__init__)
 @patch
-def to_native_fp16(self:Learner):
-    self.add_cb(NativeMixedPrecision())
+def to_native_fp16(self:Learner, **kwargs):
+    self.add_cb(NativeMixedPrecision(**kwargs))
     return self
 
 # Cell

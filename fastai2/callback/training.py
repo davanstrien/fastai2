@@ -24,27 +24,28 @@ class GradientAccumulation(Callback):
     toward_end,run_before=True,MixedPrecision
 
     def __init__(self, n_acc=32): store_attr(self, 'n_acc')
-    def begin_fit(self): self.count=0
+    def before_fit(self): self.count=0
 
     def after_backward(self):
         self.count += find_bs(self.learn.yb)
         if self.count < self.n_acc: raise CancelBatchException() #skip weight update
         else: self.count=0
 
-    _docs = dict(begin_fit="Set counter to 0",
+    _docs = dict(before_fit="Set counter to 0",
                  after_backward="Skip weight update if we have not seen enough items")
 
 # Cell
 bn_types = (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)
 
-def set_bn_eval(m:nn.Module)->None:
+def set_bn_eval(m:nn.Module, use_eval=True)->None:
     "Set bn layers in eval mode for all recursive children of `m`."
     for l in m.children():
         if isinstance(l, bn_types) and not next(l.parameters()).requires_grad:
-            l.eval()
+            if use_eval: l.eval()
+            else:        l.train()
         set_bn_eval(l)
 
 class BnFreeze(Callback):
     "Freeze moving average statistics in all non-trainable batchnorm layers."
-    def begin_epoch(self):
+    def before_epoch(self):
         set_bn_eval(self.model)

@@ -6,16 +6,19 @@ __all__ = ['progress_bar', 'master_bar', 'subplots', 'show_image', 'show_titled_
            'to_np', 'to_concat', 'TensorBase', 'TensorCategory', 'TensorMultiCategory', 'TensorImageBase',
            'TensorImage', 'TensorImageBW', 'TensorMask', 'TitledTensorScalar', 'concat', 'Chunks', 'show_title',
            'ShowTitle', 'TitledInt', 'TitledFloat', 'TitledStr', 'TitledTuple', 'get_empty_df', 'display_df',
-           'get_first', 'one_param', 'item_find', 'find_device', 'find_bs', 'Module', 'get_model', 'one_hot',
-           'one_hot_decode', 'params', 'trainable_params', 'norm_types', 'bn_bias_params', 'batch_to_samples', 'logit',
-           'num_distrib', 'rank_distrib', 'distrib_barrier', 'base_doc', 'doc', 'nested_reorder', 'to_image',
+           'get_first', 'one_param', 'item_find', 'find_device', 'find_bs', 'np_func', 'Module', 'get_model', 'one_hot',
+           'one_hot_decode', 'params', 'trainable_params', 'norm_types', 'norm_bias_params', 'batch_to_samples',
+           'logit', 'num_distrib', 'rank_distrib', 'distrib_barrier', 'base_doc', 'doc', 'nested_reorder', 'to_image',
            'make_cross_image', 'show_image_batch', 'requires_grad', 'init_default', 'cond_init', 'apply_leaf',
-           'apply_init', 'set_num_threads', 'ProcessPoolExecutor', 'parallel', 'run_procs', 'parallel_gen',
-           'script_use_ctx', 'script_save_ctx', 'script_fwd', 'script_bwd', 'grad_module', 'flatten_check']
+           'apply_init', 'script_use_ctx', 'script_save_ctx', 'script_fwd', 'script_bwd', 'grad_module',
+           'flatten_check']
 
 # Cell
 from .imports import *
 from .torch_imports import *
+
+# Cell
+#nbdev_comment _all_ = ['progress_bar','master_bar']
 
 # Cell
 if torch.cuda.is_available():
@@ -38,6 +41,7 @@ def _fig_bounds(x):
     return min(5, max(1,r))
 
 # Cell
+@delegates(plt.Axes.imshow, keep=True, but=['shape', 'imlim'])
 def show_image(im, ax=None, figsize=None, title=None, ctx=None, **kwargs):
     "Show a PIL or PyTorch image on `ax`."
     # Handle pytorch axis order
@@ -57,6 +61,7 @@ def show_image(im, ax=None, figsize=None, title=None, ctx=None, **kwargs):
     return ax
 
 # Cell
+@delegates(show_image, keep=True)
 def show_titled_image(o, **kwargs):
     "Call `show_image` destructuring `o` to `(img,title)`"
     show_image(o[0], title=str(o[1]), **kwargs)
@@ -72,23 +77,31 @@ def show_images(ims, nrows=1, ncols=None, titles=None, **kwargs):
 
 # Cell
 class ArrayBase(ndarray):
+    "An `ndarray` that can modify casting behavior"
     @classmethod
     def _before_cast(cls, x): return x if isinstance(x,ndarray) else array(x)
 
 # Cell
 class ArrayImageBase(ArrayBase):
+    "Base class for arrays representing images"
     _show_args = {'cmap':'viridis'}
     def show(self, ctx=None, **kwargs):
         return show_image(self, ctx=ctx, **{**self._show_args, **kwargs})
 
 # Cell
-class ArrayImage(ArrayImageBase): pass
+class ArrayImage(ArrayImageBase):
+    "An array representing an image"
+    pass
 
 # Cell
-class ArrayImageBW(ArrayImage): _show_args = {'cmap':'Greys'}
+class ArrayImageBW(ArrayImage):
+    "An array representing an image"
+    _show_args = {'cmap':'Greys'}
 
 # Cell
-class ArrayMask(ArrayImageBase): _show_args = {'alpha':0.5, 'cmap':'tab20', 'interpolation':'nearest'}
+class ArrayMask(ArrayImageBase):
+    "An array representing an image mask"
+    _show_args = {'alpha':0.5, 'cmap':'tab20', 'interpolation':'nearest'}
 
 # Cell
 @patch
@@ -101,6 +114,7 @@ def _array2tensor(x):
     return torch.from_numpy(x)
 
 # Cell
+@use_kwargs_dict(dtype=None, device=None, requires_grad=False, pin_memory=False)
 def tensor(x, *rest, **kwargs):
     "Like `torch.as_tensor`, but handle lists too, and can pass multiple vector elements directly."
     if len(rest): x = (x,)+rest
@@ -220,9 +234,14 @@ def to_concat(xs, dim=0):
 
 # Cell
 @patch
-def set_meta(self:Tensor, x):
+def set_meta(self:Tensor, x, copy_meta=False):
     "Set all metadata in `__dict__`"
-    if hasattr(x,'__dict__'): self.__dict__ = x.__dict__
+    if not hasattr(x,'__dict__'): return
+    d = x.__dict__
+    if copy_meta:
+        d = copy(d)
+        if '_meta' in d: d['_meta'] = copy(d['_meta'])
+    self.__dict__ = d
 
 # Cell
 @patch
@@ -231,21 +250,24 @@ def get_meta(self:Tensor, n, d=None):
     return getattr(self, '_meta', {}).get(n, d)
 
 # Cell
+if not hasattr(torch,'as_subclass'):
+    setattr(torch, 'as_subclass', torch.Tensor.as_subclass)
+
+# Cell
 @patch
 def as_subclass(self:Tensor, typ):
-    "Cast to `typ` (should be in future PyTorch version, so remove this then)"
-    res = torch.Tensor._make_subclass(typ, self)
-    return retain_meta(self, res)
+    "Cast to `typ` and include `__dict__` and meta"
+    return retain_meta(self, torch.as_subclass(self, typ))
 
 # Cell
 class TensorBase(Tensor):
     def __new__(cls, x, **kwargs):
         res = cast(tensor(x), cls)
-        res._meta = kwargs
+        if kwargs: res._meta = kwargs
         return res
 
     @classmethod
-    def _before_cast(cls, x): return x if isinstance(x,Tensor) else tensor(x)
+    def _before_cast(cls, x): return tensor(x)
 
     def __reduce_ex__(self,proto):
         torch.utils.hooks.warn_if_has_hooks(self)
@@ -270,7 +292,7 @@ def _patch_tb():
         def _f(self, *args, **kwargs):
             cls = self.__class__
             res = getattr(super(TensorBase, self), fn)(*args, **kwargs)
-            return retain_type(res, self)
+            return retain_type(res, self, copy_meta=True)
         return _f
 
     t = tensor([1])
@@ -480,6 +502,15 @@ def find_bs(b):
     return item_find(b).shape[0]
 
 # Cell
+def np_func(f):
+    "Convert a function taking and returning numpy arrays to one taking and returning tensors"
+    def _inner(*args, **kwargs):
+        nargs = [to_np(arg) if isinstance(arg,Tensor) else arg for arg in args]
+        return tensor(f(*nargs, **kwargs))
+    functools.update_wrapper(_inner, f)
+    return _inner
+
+# Cell
 class Module(nn.Module, metaclass=PrePostInitMeta):
     "Same as `nn.Module`, but no need for subclasses to call `super().__init__`"
     def __pre_init__(self, *args, **kwargs): super().__init__()
@@ -515,13 +546,13 @@ def trainable_params(m):
     return [p for p in m.parameters() if p.requires_grad]
 
 # Cell
-norm_types = (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d, nn.InstanceNorm1d, nn.InstanceNorm2d, nn.InstanceNorm3d)
+norm_types = (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d, nn.InstanceNorm1d, nn.InstanceNorm2d, nn.InstanceNorm3d, nn.LayerNorm)
 
 # Cell
-def bn_bias_params(m, with_bias=True): # TODO: Rename to `norm_bias_params`
+def norm_bias_params(m, with_bias=True):
     "Return all bias and BatchNorm parameters"
     if isinstance(m, norm_types): return L(m.parameters())
-    res = L(m.children()).map(bn_bias_params, with_bias=with_bias).concat()
+    res = L(m.children()).map(norm_bias_params, with_bias=with_bias).concat()
     if with_bias and getattr(m, 'bias', None) is not None: res.append(m.bias)
     return res
 
@@ -675,64 +706,6 @@ def apply_leaf(m, f):
 def apply_init(m, func=nn.init.kaiming_normal_):
     "Initialize all non-batchnorm layers of `m` with `func`."
     apply_leaf(m, partial(cond_init, func=func))
-
-# Cell
-from multiprocessing import Process, Queue
-
-# Cell
-def set_num_threads(nt):
-    "Get numpy (and others) to use `nt` threads"
-    try: import mkl; mkl.set_num_threads(nt)
-    except: pass
-    torch.set_num_threads(1)
-    os.environ['IPC_ENABLE']='1'
-    for o in ['OPENBLAS_NUM_THREADS','NUMEXPR_NUM_THREADS','OMP_NUM_THREADS','MKL_NUM_THREADS']:
-        os.environ[o] = str(nt)
-
-# Cell
-@delegates(concurrent.futures.ProcessPoolExecutor)
-class ProcessPoolExecutor(concurrent.futures.ProcessPoolExecutor):
-    def __init__(self, max_workers=None, on_exc=print, **kwargs):
-        self.not_parallel = max_workers==0
-        self.on_exc = on_exc
-        if self.not_parallel: max_workers=1
-        super().__init__(max_workers, **kwargs)
-
-    def map(self, f, items, *args, **kwargs):
-        g = partial(f, *args, **kwargs)
-        if self.not_parallel: return map(g, items)
-        try: return super().map(g, items)
-        except Exception as e: self.on_exc(e)
-
-# Cell
-def parallel(f, items, *args, n_workers=defaults.cpus, total=None, progress=True, **kwargs):
-    "Applies `func` in parallel to `items`, using `n_workers`"
-    with ProcessPoolExecutor(n_workers) as ex:
-        r = ex.map(f,items, *args, **kwargs)
-        if progress:
-            if total is None: total = len(items)
-            r = progress_bar(r, total=total, leave=False)
-        return L(r)
-
-# Cell
-def run_procs(f, f_done, args):
-    "Call `f` for each item in `args` in parallel, yielding `f_done`"
-    processes = L(args).map(Process, args=arg0, target=f)
-    for o in processes: o.start()
-    try: yield from f_done()
-    except Exception as e: print(e)
-    finally: processes.map(Self.join())
-
-# Cell
-def parallel_gen(cls, items, n_workers=defaults.cpus, as_gen=False, **kwargs):
-    "Instantiate `cls` in `n_workers` procs & call each on a subset of `items` in parallel."
-    batches = np.array_split(items, n_workers)
-    idx = np.cumsum(0 + L(batches).map(len))
-    queue = Queue()
-    def f(batch, start_idx):
-        for i,b in enumerate(cls(**kwargs)(batch)): queue.put((start_idx+i,b))
-    def done(): return (queue.get() for _ in progress_bar(items, leave=False))
-    yield from run_procs(f, done, L(batches,idx).zip())
 
 # Cell
 def script_use_ctx(f):
